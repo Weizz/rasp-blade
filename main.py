@@ -1,12 +1,13 @@
 ﻿import asyncio
+import os
 import threading
 import tkinter as tk
 from tkinter import font
 
 from bleak import BleakClient, BleakScanner
 
-BEY_DATA_CHAR_UUID = ""
-SCAN_TIMEOUT = 120.0
+BEY_DATA_CHAR_UUID = "55c4f002-f8eb-11ec-b939-0242ac120002"
+SCAN_TIMEOUT = 5.0
 
 
 class RaspberryPiApp:
@@ -16,6 +17,8 @@ class RaspberryPiApp:
         self.stop_event = threading.Event()
         self.max_value = None
         self.ble_thread = None
+        self.blink_job = None
+        self.blink_state = False
 
         self.setup_window()
         self.create_widgets()
@@ -34,6 +37,30 @@ class RaspberryPiApp:
         top_frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=10)
         top_frame.pack_propagate(False)
 
+        icon_frame = tk.Frame(top_frame, bg='white', width=40, height=40)
+        icon_frame.pack(side=tk.LEFT)
+        icon_frame.pack_propagate(False)
+
+        self.icon_label = tk.Label(
+            icon_frame,
+            bg='white',
+            width=40,
+            height=40,
+        )
+        self.icon_label.pack(fill=tk.BOTH, expand=True)
+
+        icon_frame2 = tk.Frame(top_frame, bg='white', width=40, height=40)
+        icon_frame2.pack(side=tk.LEFT, padx=(8, 0))
+        icon_frame2.pack_propagate(False)
+
+        self.icon_label2 = tk.Label(
+            icon_frame2,
+            bg='white',
+            width=40,
+            height=40,
+        )
+        self.icon_label2.pack(fill=tk.BOTH, expand=True)
+
         close_btn = tk.Button(
             top_frame,
             text='✕',
@@ -51,28 +78,7 @@ class RaspberryPiApp:
         main_frame = tk.Frame(self.root, bg='white')
         main_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=20)
 
-        hello_font = font.Font(family='Helvetica', size=24, weight='bold')
-        hello_label = tk.Label(
-            main_frame,
-            text='BLE 連線測試',
-            font=hello_font,
-            bg='white',
-            fg='black',
-        )
-        hello_label.pack(pady=(0, 20))
-
         status_font = font.Font(family='Helvetica', size=18)
-        self.status_label = tk.Label(
-            main_frame,
-            text='準備中...',
-            font=status_font,
-            bg='white',
-            fg='blue',
-            justify=tk.CENTER,
-            wraplength=440,
-        )
-        self.status_label.pack(pady=(0, 10))
-
         self.max_label = tk.Label(
             main_frame,
             text='等待資料...',
@@ -82,13 +88,75 @@ class RaspberryPiApp:
         )
         self.max_label.pack(pady=(10, 0))
 
+        self.load_icons()
+        self.set_scanning_icon()
+        self.set_status_icon('disconnected')
+
+    def load_icons(self):
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        self.icon_images = {
+            'link': tk.PhotoImage(file=os.path.join(base_dir, 'link.png')),
+            'alert': tk.PhotoImage(file=os.path.join(base_dir, 'alert.png')),
+            'link-off': tk.PhotoImage(file=os.path.join(base_dir, 'link-off.png')),
+            'connected': tk.PhotoImage(file=os.path.join(base_dir, 'connected.png')),
+            'disconnected': tk.PhotoImage(file=os.path.join(base_dir, 'disconnected.png')),
+        }
+
+    def set_icon(self, name: str, blink: bool = False):
+        self.root.after(0, lambda: self._set_icon_main(name, blink))
+
+    def set_status_icon(self, name: str):
+        icon = self.icon_images.get(name)
+        self.root.after(0, lambda: self.icon_label2.config(image=icon, text=''))
+
+    def _set_icon_main(self, name: str, blink: bool = False):
+        self.stop_blink()
+        if blink:
+            self.blink_state = False
+            self._blink_icon(name)
+        else:
+            icon = self.icon_images.get(name)
+            self.icon_label.config(image=icon, text='')
+
+    def _blink_icon(self, name: str):
+        if self.stop_event.is_set():
+            return
+        icon = self.icon_images.get(name)
+        if self.blink_state:
+            self.icon_label.config(image=icon, text='')
+        else:
+            self.icon_label.config(image='', text='')
+        self.blink_state = not self.blink_state
+        self.blink_job = self.root.after(500, lambda: self._blink_icon(name))
+
+    def stop_blink(self):
+        if self.blink_job is not None:
+            self.root.after_cancel(self.blink_job)
+            self.blink_job = None
+        self.blink_state = False
+
+    def set_scanning_icon(self):
+        self.set_icon('link', blink=True)
+
+    def set_connected_icon(self):
+        self.set_icon('link', blink=False)
+
+    def set_error_icon(self):
+        self.set_icon('alert', blink=False)
+
+    def set_disconnected_icon(self):
+        self.set_icon('link-off', blink=False)
+
+    def schedule_reconnect(self):
+        if not self.stop_event.is_set():
+            self.root.after(5000, self.start_ble)
+
     def start_ble(self):
-        self.update_status('正在連接...')
+        if self.ble_thread and self.ble_thread.is_alive():
+            return
+        self.set_scanning_icon()
         self.ble_thread = threading.Thread(target=self.ble_worker, daemon=True)
         self.ble_thread.start()
-
-    def update_status(self, text: str):
-        self.root.after(0, lambda: self.status_label.config(text=text))
 
     def update_max_value(self, value: int):
         self.max_value = value
@@ -97,36 +165,47 @@ class RaspberryPiApp:
     def ble_worker(self):
         try:
             asyncio.run(self.ble_main())
-        except Exception as exc:
-            self.update_status(f'連線錯誤：{exc}')
+        except Exception:
+            self.set_error_icon()
 
     async def ble_main(self):
-        self.update_status('正在掃描 BLE 裝置...')
-        devices = await BleakScanner.discover(timeout=SCAN_TIMEOUT)
+        target_device = None
+        while not target_device and not self.stop_event.is_set():
+            devices = await BleakScanner.discover(timeout=SCAN_TIMEOUT)
+            target_device = next(
+                (device for device in devices if device.name == 'BEYBLADE_TOOL01'),
+                None,
+            )
+            if not target_device:
+                await asyncio.sleep(1)
 
-        if not devices:
-            self.update_status('未找到 BLE 裝置')
+        if self.stop_event.is_set() or not target_device:
+            if not self.stop_event.is_set():
+                self.set_error_icon()
             return
 
-        target_device = devices[0]
-        device_name = target_device.name or target_device.address
-        self.update_status(f'找到裝置：{device_name}\n連線中...')
-
+        self.set_connected_icon()
         try:
             async with BleakClient(target_device.address) as client:
                 if not client.is_connected:
-                    self.update_status('無法連上裝置')
+                    self.set_error_icon()
                     return
 
-                self.update_status('連線成功！')
+                self.set_connected_icon()
                 await client.start_notify(BEY_DATA_CHAR_UUID, self.notification_handler)
 
                 while client.is_connected and not self.stop_event.is_set():
                     await asyncio.sleep(1)
 
+                if not client.is_connected and not self.stop_event.is_set():
+                    self.set_disconnected_icon()
+                    self.schedule_reconnect()
+
                 await client.stop_notify(BEY_DATA_CHAR_UUID)
-        except Exception as exc:
-            self.update_status(f'連線失敗：{exc}')
+        except Exception:
+            self.set_error_icon()
+            if not self.stop_event.is_set():
+                self.root.after(5000, self.start_ble)
 
     def notification_handler(self, sender, data: bytearray):
         if 0xB0 <= data[0] <= 0xB5 and len(data) > 2:
@@ -137,9 +216,14 @@ class RaspberryPiApp:
             if parsed_values:
                 packet_max = max(parsed_values)
                 self.update_max_value(packet_max)
+        if data[0] == 0x00:
+            self.set_status_icon('connected')
+        else:
+            self.set_status_icon('disconnected')
 
     def close_app(self):
         self.stop_event.set()
+        self.stop_blink()
         self.root.quit()
 
 
