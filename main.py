@@ -160,7 +160,7 @@ class RaspberryPiApp:
 
     def update_max_value(self, value: int):
         self.max_value = value
-        self.root.after(0, lambda: self.max_label.config(text=f'最大值: {value}'))
+        self.root.after(0, lambda: self.max_label.config(text=f'{value}'))
 
     def ble_worker(self):
         try:
@@ -207,20 +207,17 @@ class RaspberryPiApp:
             if not self.stop_event.is_set():
                 self.root.after(5000, self.start_ble)
 
-    def notification_handler(self, data: bytearray):
-        if 0xB0 <= data[0] <= 0xB5 and len(data) > 2:
-            parsed_values = []
-            for i in range(1, len(data) - 1, 2):
-                parsed_values.append(int.from_bytes(data[i:i + 2], byteorder='little'))
-
-            if parsed_values:
-                packet_max = max(parsed_values)
-                self.update_max_value(packet_max)
-        if data[0] == 0x00:
-            self.set_status_icon('connected')
-            self.update_max_value(0)
-        else:
-            self.set_status_icon('disconnected')
+    def notification_handler(self, sender, data: bytearray):
+        if data[0] == 0xB5:
+            value = int.from_bytes(data[15:17], byteorder='little')
+            self.update_max_value(value)
+        if data[0] == 0xA0:
+            if len(data) >= 4:
+                if data[3] != 0x00:
+                    self.set_status_icon('connected')
+                    self.update_max_value(0)
+                else:
+                    self.set_status_icon('disconnected')
 
     def close_app(self):
         self.stop_event.set()
