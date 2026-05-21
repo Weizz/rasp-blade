@@ -33,31 +33,31 @@ class RaspberryPiApp:
 
     def create_widgets(self):
         """創建 UI 組件"""
-        top_frame = tk.Frame(self.root, bg='white', height=40)
+        top_frame = tk.Frame(self.root, bg='white', height=56)
         top_frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=10)
         top_frame.pack_propagate(False)
 
-        icon_frame = tk.Frame(top_frame, bg='white', width=40, height=40)
+        icon_frame = tk.Frame(top_frame, bg='white', width=48, height=48)
         icon_frame.pack(side=tk.LEFT)
         icon_frame.pack_propagate(False)
 
         self.icon_label = tk.Label(
             icon_frame,
             bg='white',
-            width=40,
-            height=40,
+            width=48,
+            height=48,
         )
         self.icon_label.pack(fill=tk.BOTH, expand=True)
 
-        icon_frame2 = tk.Frame(top_frame, bg='white', width=40, height=40)
+        icon_frame2 = tk.Frame(top_frame, bg='white', width=48, height=48)
         icon_frame2.pack(side=tk.LEFT, padx=(8, 0))
         icon_frame2.pack_propagate(False)
 
         self.icon_label2 = tk.Label(
             icon_frame2,
             bg='white',
-            width=40,
-            height=40,
+            width=48,
+            height=48,
         )
         self.icon_label2.pack(fill=tk.BOTH, expand=True)
 
@@ -192,7 +192,17 @@ class RaspberryPiApp:
                     return
 
                 self.set_connected_icon()
-                await client.start_notify(BEY_DATA_CHAR_UUID, self.notification_handler)
+                try:
+                    await client.start_notify(BEY_DATA_CHAR_UUID, self.notification_handler)
+                    print('start_notify: registered for', BEY_DATA_CHAR_UUID)
+                    # ensure second status icon reflects connection when notifications start
+                    self.set_status_icon('connected')
+                except Exception as exc:
+                    print('start_notify failed:', exc)
+                    self.set_error_icon()
+                    if not self.stop_event.is_set():
+                        self.root.after(5000, self.start_ble)
+                    return
 
                 while client.is_connected and not self.stop_event.is_set():
                     await asyncio.sleep(1)
@@ -208,6 +218,9 @@ class RaspberryPiApp:
                 self.root.after(5000, self.start_ble)
 
     def notification_handler(self, sender, data: bytearray):
+        print('notification_handler called, sender=', sender, 'len=', len(data) if data is not None else 0)
+        if not data:
+            return
         if 0xB0 <= data[0] <= 0xB5 and len(data) > 2:
             parsed_values = []
             for i in range(1, len(data) - 1, 2):
@@ -216,8 +229,10 @@ class RaspberryPiApp:
             if parsed_values:
                 packet_max = max(parsed_values)
                 self.update_max_value(packet_max)
+        # secondary connected/disconnected indicator based on 0x00
         if data[0] == 0x00:
             self.set_status_icon('connected')
+            self.update_max_value(0)
         else:
             self.set_status_icon('disconnected')
 
