@@ -23,6 +23,7 @@ class RaspberryPiApp:
         self.setup_window()
         self.create_widgets()
         self.root.after(200, self.start_ble)
+        self.root.protocol("WM_DELETE_WINDOW", self.close_app)
 
     def setup_window(self):
         """設置窗口為全螢幕，480x320解析度"""
@@ -225,13 +226,16 @@ class RaspberryPiApp:
                 await asyncio.sleep(1)
 
         if self.stop_event.is_set() or not target_device:
-            if not self.stop_event.is_set():
-                self.set_error_icon()
             return
 
         self.set_connected_icon()
+        
         try:
-            async with BleakClient(target_device.address) as client:
+            async with BleakClient(
+                target_device.address, 
+                disconnected_callback=lambda c: self.on_ble_disconnect()
+            ) as client:
+                
                 if not client.is_connected:
                     self.set_error_icon()
                     return
@@ -239,18 +243,18 @@ class RaspberryPiApp:
                 self.set_connected_icon()
                 await client.start_notify(BEY_DATA_CHAR_UUID, self.notification_handler)
 
+                # 定時檢查 stop_event，若外部要求關閉，則跳出迴圈
                 while client.is_connected and not self.stop_event.is_set():
-                    await asyncio.sleep(1)
+                    await asyncio.sleep(0.2)
 
-                if not client.is_connected and not self.stop_event.is_set():
-                    self.set_disconnected_icon()
-                    self.schedule_reconnect()
-
+                # 當跳出迴圈（代表使用者關閉程式或手動關閉），確保執行停止通知
                 await client.stop_notify(BEY_DATA_CHAR_UUID)
-        except Exception:
+                
+        except Exception as e:
+            print(f"BLE 異常: {e}")
             self.set_error_icon()
             if not self.stop_event.is_set():
-                self.root.after(5000, self.start_ble)
+                self.schedule_reconnect()
 
     def notification_handler(self, sender, data: bytearray):
         if data[0] == 0xB5:
@@ -265,9 +269,23 @@ class RaspberryPiApp:
                     self.set_status_icon('disconnected')
 
     def close_app(self):
+        # 1. 設定停止旗標，讓 ble_main 內部的迴圈看見並準備退出
         self.stop_event.set()
         self.stop_blink()
-        self.root.quit()
+        
+        # 2. 建立一個安全關閉的檢查函式（避免阻塞 Tkinter 主執行緒）
+        def wait_and_exit():
+            if self.ble_thread and self.ble_thread.is_alive():
+                # 如果藍牙執行緒還活著，等它最多 2 秒（讓它跑完 disconnect）
+                print("正在等待藍牙執行緒安全關閉...")
+                self.ble_thread.join(timeout=2.0)
+            
+            # 3. 藍牙安全釋放後，回到主執行緒關閉視窗
+            print("所有資源釋放完畢，關閉視窗。")
+            self.root.after(0, self.root.destroy)
+
+        # 開一個臨時執行緒去等待，才不會讓 GUI 畫面在點擊關閉時瞬間凍結卡死
+        threading.Thread(target=wait_and_exit, daemon=True).start()
 
 
 def main():
