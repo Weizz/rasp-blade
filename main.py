@@ -15,7 +15,7 @@ class RaspberryPiApp:
         self.root = root
         self.root.title('Raspberry Pi Application')
         self.stop_event = threading.Event()
-        self.max_value = None
+        self.power_value = None
         self.ble_thread = None
         self.blink_job = None
         self.blink_state = False
@@ -28,73 +28,96 @@ class RaspberryPiApp:
         """設置窗口為全螢幕，480x320解析度"""
         self.root.attributes('-fullscreen', True)
         self.root.geometry('480x320')
-        self.root.configure(bg='white')
+        self.root.configure(bg='#F4E7E1')
         self.root.resizable(False, False)
 
     def create_widgets(self):
         """創建 UI 組件"""
-        top_frame = tk.Frame(self.root, bg='white', height=56)
+        top_frame = tk.Frame(self.root, bg='#F4E7E1', height=56)
         top_frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=10)
         top_frame.pack_propagate(False)
 
-        icon_frame = tk.Frame(top_frame, bg='white', width=52, height=52)
-        icon_frame.pack(side=tk.LEFT)
+        self.close_label = tk.Label(
+            top_frame,
+            bg='#F4E7E1',
+            cursor='hand2',
+        )
+        self.close_label.pack(side=tk.LEFT)
+        self.close_label.bind('<Button-1>', lambda _: self.close_app())
+
+        icon_frame = tk.Frame(top_frame, bg='#F4E7E1', width=52, height=52)
+        icon_frame.pack(side=tk.LEFT, padx=(8, 0))
         icon_frame.pack_propagate(False)
 
         self.icon_label = tk.Label(
             icon_frame,
-            bg='white',
+            bg='#F4E7E1',
             width=52,
             height=52,
         )
         self.icon_label.pack(fill=tk.BOTH, expand=True)
 
-        icon_frame2 = tk.Frame(top_frame, bg='white', width=52, height=52)
+        icon_frame2 = tk.Frame(top_frame, bg='#F4E7E1', width=52, height=52)
         icon_frame2.pack(side=tk.LEFT, padx=(8, 0))
         icon_frame2.pack_propagate(False)
 
         self.icon_label2 = tk.Label(
             icon_frame2,
-            bg='white',
+            bg='#F4E7E1',
             width=52,
             height=52,
         )
         self.icon_label2.pack(fill=tk.BOTH, expand=True)
 
-        close_btn = tk.Button(
-            top_frame,
-            text='✕',
-            command=self.close_app,
-            font=('Helvetica', 16, 'bold'),
-            bg='red',
-            fg='white',
-            width=3,
-            height=1,
-            relief=tk.RAISED,
-            bd=2,
-        )
-        close_btn.pack(side=tk.RIGHT)
-
-        main_frame = tk.Frame(self.root, bg='white')
+        main_frame = tk.Frame(self.root, bg='#F4E7E1')
         main_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=20)
 
-        status_font = font.Font(family='Helvetica', size=18)
-        self.max_label = tk.Label(
+        self.power_label = tk.Label(
             main_frame,
             text='--',
-            font=status_font,
-            bg='white',
-            fg='black',
+            font=('Helvetica', 72),
+            bg='#F4E7E1',
+            fg='#521C0D',
         )
-        self.max_label.pack(pady=(10, 0))
+        self.power_label.pack(pady=(10, 0))
+
+        history_frame = tk.Frame(main_frame, bg='#F4E7E1')
+        history_frame.pack(fill=tk.BOTH, expand=True, pady=(36, 0))
+
+        history_container = tk.Frame(history_frame, bg='#F4E7E1')
+        history_container.pack(fill=tk.BOTH, expand=True, anchor='center')
+
+        history_scrollbar = tk.Scrollbar(history_container)
+
+        self.history_text = tk.Text(
+            history_container,
+            bg='#F4E7E1',
+            fg='#8A939C',
+            font=('Helvetica', 48),
+            wrap=tk.WORD,
+            yscrollcommand=history_scrollbar.set,
+            bd=0,
+            highlightthickness=0,
+            relief=tk.FLAT,
+            state=tk.DISABLED,
+            height=1,
+            width=5,
+        )
+        self.history_text.pack(fill=tk.BOTH, expand=True)
+        history_scrollbar.config(command=self.history_text.yview)
+
+        self.history_text_tag = 'center'
+        self.history_text.tag_config(self.history_text_tag, justify=tk.CENTER)
 
         self.load_icons()
+        self.close_label.config(image=self.icon_images['off'])
         self.set_scanning_icon()
         self.set_status_icon('disconnected')
 
     def load_icons(self):
         base_dir = os.path.dirname(os.path.abspath(__file__))
         self.icon_images = {
+            'off': tk.PhotoImage(file=os.path.join(base_dir, 'off.png')),
             'link': tk.PhotoImage(file=os.path.join(base_dir, 'link.png')),
             'alert': tk.PhotoImage(file=os.path.join(base_dir, 'alert.png')),
             'link-off': tk.PhotoImage(file=os.path.join(base_dir, 'link-off.png')),
@@ -149,7 +172,7 @@ class RaspberryPiApp:
 
     def schedule_reconnect(self):
         if not self.stop_event.is_set():
-            self.root.after(5000, self.start_ble)
+            self.root.after(1000, self.start_ble)
 
     def start_ble(self):
         if self.ble_thread and self.ble_thread.is_alive():
@@ -158,9 +181,31 @@ class RaspberryPiApp:
         self.ble_thread = threading.Thread(target=self.ble_worker, daemon=True)
         self.ble_thread.start()
 
-    def update_max_value(self, value: int):
-        self.max_value = value
-        self.root.after(0, lambda: self.max_label.config(text=f'{value}'))
+    def update_power_value(self, value: int):
+        self.power_value = value
+        color = self.get_power_color(value)
+        self.root.after(0, lambda: self.power_label.config(text=f'{value}', fg=color))
+        if value != 0:
+            self.add_history_entry(f'{value}')
+
+    def get_power_color(self, value: int) -> str:
+        if value <= 5000:
+            return '#521C0D'
+        if value <= 7000:
+            return '#7B3A17'
+        if value <= 10000:
+            return '#B25A24'
+        if value <= 12000:
+            return '#E47A32'
+        return '#FF9B45'
+
+    def add_history_entry(self, entry: str):
+        self.history_text.config(state=tk.NORMAL)
+        start = '1.0'
+        self.history_text.insert(start, entry + '\n')
+        self.history_text.tag_add(self.history_text_tag, start, self.history_text.index('1.0 lineend'))
+        self.history_text.see('1.0')
+        self.history_text.config(state=tk.DISABLED)
 
     def ble_worker(self):
         try:
@@ -210,12 +255,12 @@ class RaspberryPiApp:
     def notification_handler(self, sender, data: bytearray):
         if data[0] == 0xB5:
             value = int.from_bytes(data[15:17], byteorder='little')
-            self.update_max_value(value)
+            self.update_power_value(value)
         if data[0] == 0xA0:
             if len(data) >= 4:
                 if data[3] != 0x00:
                     self.set_status_icon('connected')
-                    self.update_max_value(0)
+                    self.update_power_value(0)
                 else:
                     self.set_status_icon('disconnected')
 
